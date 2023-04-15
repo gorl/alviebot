@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -110,13 +111,29 @@ func (b *Bot) processUpdate(update tgbotapi.Update) {
 		return
 	}
 
-	text := msg.Text
-	if !IsTemplate(text) {
+	text := TemplateText{
+		Text:      msg.Text,
+		IsCaption: false,
+	}
+	entities := msg.Entities
+
+	if text.Text == "" {
+		text = TemplateText{
+			Text:      msg.Caption,
+			IsCaption: true,
+		}
+		entities = msg.CaptionEntities
+	}
+
+	if !IsTemplate(text.Text) {
 		log.Println("not a template, skip it")
 		if err := b.templateManager.DeleteTemplate(msg.Chat.ID, int64(msg.MessageID)); err != nil {
 			log.Println("Error on removing template:", err.Error())
 		}
+		return
 	}
+
+	text.Text = format(text.Text, entities)
 	log.Println("got template", text)
 	if err := b.templateManager.AddTemplate(msg.Chat.ID, int64(msg.MessageID), text); err != nil {
 		log.Println("Error on adding template:", err.Error())
@@ -130,25 +147,82 @@ func (b *Bot) processUpdate(update tgbotapi.Update) {
 	}
 }
 
-func (b *Bot) updateMessage(chatID int64, messageID int, text string) error {
+func format(originalText string, entities []tgbotapi.MessageEntity) string {
+	if len(entities) == 0 {
+		return originalText
+	}
+	text := []rune(originalText)
+
+	formatedText := ""
+	endIndex := 0
+	casualTag := func(tag string) func(string) string {
+		return func(s string) string {
+			return "<" + tag + ">" + s + "</" + tag + ">"
+		}
+	}
+	for _, entity := range entities {
+		if endIndex > entity.Offset || endIndex >= len(text) {
+			continue
+		}
+		tag := func(s string) string { return s }
+		if entity.IsBold() {
+			tag = casualTag("b")
+		}
+		if entity.IsItalic() {
+			tag = casualTag("i")
+		}
+		if entity.IsTextLink() {
+			tag = func(ref string) func(s string) string {
+				return func(s string) string {
+					return "<a href=\"" + ref + "\">" + s + "</a>"
+				}
+			}(entity.URL)
+		}
+		prefix := string(text[endIndex:entity.Offset])
+		body := string(text[entity.Offset:int(math.Min(float64(entity.Offset+entity.Length), float64(len(text))))])
+		formatedText += prefix + tag(body)
+		endIndex = entity.Offset + entity.Length
+	}
+	if endIndex < len(text) {
+		formatedText += string(text[endIndex:])
+	}
+	return formatedText
+}
+
+func (b *Bot) updateMessage(chatID int64, messageID int, text TemplateText) error {
 	b.m.Lock()
 	defer b.m.Unlock()
-	_, err := b.botAPI.Send(tgbotapi.EditMessageTextConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			ChatID:    chatID,
-			MessageID: messageID,
-		},
-		Text: b.renderer.Render(text),
-	})
-	if err != nil {
+	rendered := b.renderer.Render(text.Text)
+	var msg tgbotapi.Chattable
+	if text.IsCaption {
+		msg = &tgbotapi.EditMessageCaptionConfig{
+			BaseEdit: tgbotapi.BaseEdit{
+				ChatID:    chatID,
+				MessageID: messageID,
+			},
+			ParseMode: tgbotapi.ModeHTML,
+			Caption:   rendered,
+		}
+	} else {
+		msg = &tgbotapi.EditMessageTextConfig{
+			BaseEdit: tgbotapi.BaseEdit{
+				ChatID:    chatID,
+				MessageID: messageID,
+			},
+			ParseMode: tgbotapi.ModeHTML,
+			Text:      rendered,
+		}
+	}
+	if _, err := b.botAPI.Send(msg); err != nil {
 		return err
 	}
+
 	return nil
 }
 
 func (b *Bot) updateAllMessages() {
 	for _, template := range b.templateManager.ListTemplates() {
-		if err := b.updateMessage(template.ChatID, int(template.MessageID), template.Template); err != nil {
+		if err := b.updateMessage(template.ChatID, int(template.MessageID), template.TemplateText); err != nil {
 			log.Println("error on updating template", err.Error())
 		}
 	}

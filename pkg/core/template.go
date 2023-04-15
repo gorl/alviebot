@@ -11,20 +11,25 @@ var priceRe = regexp.MustCompile(`\$price:(\d+(\.\d+)?)`)
 
 type TemplateManager struct {
 	path      string
-	templates map[int64]map[int64]string
+	templates map[int64]map[int64]TemplateText
 	m         *sync.Mutex
 }
 
+type TemplateText struct {
+	Text      string `json:"Text"`
+	IsCaption bool   `json:"IsCaption"`
+}
+
 type Template struct {
-	ChatID    int64
-	MessageID int64
-	Template  string
+	ChatID       int64
+	MessageID    int64
+	TemplateText TemplateText
 }
 
 func NewTemplateManager(configPath string) (*TemplateManager, error) {
 	manager := &TemplateManager{
 		path:      configPath,
-		templates: make(map[int64]map[int64]string),
+		templates: make(map[int64]map[int64]TemplateText),
 		m:         &sync.Mutex{},
 	}
 
@@ -46,21 +51,21 @@ func (m *TemplateManager) ListTemplates() []Template {
 	for chatID, messages := range m.templates {
 		for messaheID, template := range messages {
 			result = append(result, Template{
-				ChatID:    chatID,
-				MessageID: messaheID,
-				Template:  template,
+				ChatID:       chatID,
+				MessageID:    messaheID,
+				TemplateText: template,
 			})
 		}
 	}
 	return result
 }
 
-func (m *TemplateManager) AddTemplate(chatID int64, messageID int64, template string) error {
+func (m *TemplateManager) AddTemplate(chatID int64, messageID int64, template TemplateText) error {
 	m.m.Lock()
 	defer m.m.Unlock()
 	watchedMessages, ok := m.templates[chatID]
 	if !ok {
-		watchedMessages = make(map[int64]string)
+		watchedMessages = make(map[int64]TemplateText)
 		m.templates[chatID] = watchedMessages
 	}
 
